@@ -27,6 +27,8 @@ import aladhan
 from dotenv import load_dotenv
 import os
 
+import asyncio
+
 
 #initialize app and set up cors 
 app = FastAPI()
@@ -89,6 +91,8 @@ client_stt = OpenAI(
 
 app.mount("/audio", StaticFiles(directory="audio_files"), name="audio") #for playing  audio 
 app.mount("/static", StaticFiles(directory="static"), name="static") #so that things in static can acess this API 
+
+
 
 
 
@@ -547,25 +551,32 @@ You: "I'm calling Abdullah now. The Dhuhr prayer is at 12:30 PM"
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    state = {"is_responding": False}
+    current_task = None 
+    
     await websocket.accept() #accept connection 
     try:
         while True: #receive the bytes and store into a "file-like object"
             data = await websocket.receive_bytes()
+            state["is_responding"] = False 
+            if current_task:
+                current_task.cancel()
             audio_file = BytesIO(data)
             transcript_text = transcribe_audio(audio_file) #transcribe "file-like object"
             await websocket.send_text(json.dumps({ #send what  the user had said 
                 "type": "transcription",
                 "text": transcript_text}))
-            ai_response_text, tool_called = await handle_tool_call(transcript_text, websocket)
-
-            #tell front-end everything is done (apart from saving but user does not care)
-            await websocket.send_text(json.dumps({"type": "done"}))
-            save_messages("user", transcript_text, ai_response_text, None, tool_called) #save message name 
+            state["is_responding"] = True
+            current_task = asyncio.create_task(handle_tool_call(transcript_text, websocket, state))
+            
             
     except WebSocketDisconnect:
         print("disconnected.")
     except Exception as e:
         print(f"Error: {e}")
+            
+        
+        
 
 
 
@@ -580,7 +591,7 @@ def transcribe_audio(audio_file):
     )
     return transcript.text
 
-async def handle_tool_call(transcript_text, websocket: WebSocket):
+async def handle_tool_call(transcript_text, websocket: WebSocket, state):
     messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": transcript_text}]
     
     response = agent_delegator.chat.completions.create(
@@ -592,23 +603,26 @@ async def handle_tool_call(transcript_text, websocket: WebSocket):
         function_name = response.choices[0].message.tool_calls[0].function.name
         function_args = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
         tool_called = function_name
-        await stream_ack_text_and_audio(function_name, function_args, websocket)
+        await stream_ack_text_and_audio(function_name, function_args, websocket, state)
         tool_result = execute_tool(function_name, function_args)
         messages.append(response.choices[0].message)
         messages.append({"tool_call_id": response.choices[0].message.tool_calls[0].id,
                          "role": "tool",
                          "name": function_name,
                          "content": str(tool_result)})
-        full_response = await stream_response_text_and_audio(messages, websocket)
+        ai_response = await stream_response_text_and_audio(messages, websocket, state)
     else:
-        full_response = await stream_response_text_and_audio(messages, websocket)
-    return full_response, tool_called
+        ai_response = await stream_response_text_and_audio(messages, websocket, state)
+    await websocket.send_text(json.dumps({"type": "done"}))
+    save_messages("user", transcript_text, ai_response, None, tool_called) 
+    return ai_response, tool_called
+
          
         
         
         
         
-async def stream_ack_text_and_audio(function_name, function_args, websocket):
+async def stream_ack_text_and_audio(function_name, function_args, websocket, state):
     ack_prompt = '''You are a brief voice assistant. Generate ONE short sentence acknowledging you are about to perform the requested action. 
         Be warm and natural. Nothing more than one sentence.'''
     ack_messages = [
@@ -619,7 +633,7 @@ async def stream_ack_text_and_audio(function_name, function_args, websocket):
         messages=ack_messages,
         stream=True)
     
-    await stream_text_and_audio(ack_response, websocket)
+    await stream_text_and_audio(ack_response, websocket, state)
     
     
     
@@ -644,23 +658,24 @@ def execute_tool(function_name, function_args):
     return result 
         
         
-async def stream_response_text_and_audio(messages, websocket):
-    
+async def stream_response_text_and_audio(messages, websocket,state):
     final_response = agent_delegator.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
         messages=messages,
         stream=True
     )
-    return await stream_text_and_audio(final_response, websocket)
+    return await stream_text_and_audio(final_response, websocket, state)
 
 
 
 
 
-async def stream_text_and_audio(llm_response, websocket):
+async def stream_text_and_audio(llm_response, websocket, state):
     build_response = ""
     buffer = "" 
     for chunk in llm_response:
+        if not state["is_responding"]:
+            break
         token = chunk.choices[0].delta.content
         if token:
             build_response += token

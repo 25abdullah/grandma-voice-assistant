@@ -80,64 +80,67 @@ async function connect() {
         };
 
         ws.onmessage = async (event) => {
-    if (event.data === "done") {
-        // Processing complete - load audio
-        const response = await fetch('http://127.0.0.1:8000/getmessagelog/');
-        const data = await response.json();
-        const aiMessage = data[data.length - 1];
-        
-        // Mute mic before playing
-        if (mediaStream) {
-            mediaStream.getAudioTracks().forEach(track => {
-                track.enabled = false;
-            });
-        }
-        
-        // Play audio
-        if (aiMessage.audio_file) {
-            const audio = new Audio(`http://127.0.0.1:8000/audio/${aiMessage.audio_file}`);
-            audio.play();
-            isAISpeaking = true;
-            
-            audio.onended = () => {
-                isAISpeaking = false;
-                // Unmute after audio
-                if (mediaStream) {
-                    mediaStream.getAudioTracks().forEach(track => {
-                        track.enabled = true;
-                    });
-                }
-            };
-        }
-        
-        statusText.textContent = 'Connected';
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
-        isListening = false;
-        
-    } else {
-        // Try parsing as JSON first
-        try {
-            const data = JSON.parse(event.data);
-            
-            if (data.type === "transcription") {
-                // Show user's transcription immediately
-                const transcriptionText = document.getElementById('transcriptionText');
-                if (transcriptionText) {
-                    transcriptionText.textContent = data.text;
-                }
+            if (event.data instanceof Blob) {
+                 audioQueue.push(event.data);
+                 playNextAudio()
+                 return ;
             }
-        } catch {
-            if (isFirstAIToken) {
+            try {
+                 const data = JSON.parse(event.data);
+                 if (data.type === 'transcription') {
+                    userTranscription.textContent = data.text;
+                 }
+                 else if (data.type === 'token') {
+                     if (isFirstAIToken) {
                 aiResponse.textContent = ''
                 isFirstAIToken = false;
             }
-                aiResponse.textContent += event.data;
-            
+                aiResponse.textContent += data.text;
+                //need to also stream the voice 
+                 }
+                 else if (data.type === 'done') {
+                    startBtn.disabled = false;
+                    stopBtn.disabled = true; 
+                    isFirstAIToken = true;
+                 }
+
+
+            } catch {
+
+            }
+
+        }}
+
+
+function playNextAudio() {
+    if (isPlayingAudio || audioQueue.length === 0) {
+        return;
+    }
+    isPlayingAudio = true;
+    isAISpeaking = true;
+    muteMicrophone();
+    
+    const firstBlob = audioQueue.shift();
+    const audioUrl = URL.createObjectURL(firstBlob);
+    const audio = new Audio(audioUrl);
+    audio.play();
+    
+    audio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+        isPlayingAudio = false;
+        if (audioQueue.length === 0) {
+            isAISpeaking = false;
+            unmuteMicrophone();
         }
+        playNextAudio();
     }
 }
-}
+
+
+
+
+
+
 
 function updateStatusText() {
     // Update status based on current state - AI speaking takes priority
@@ -304,6 +307,14 @@ async function processAudioQueue() {
     // Unmute microphone when audio playback finishes
     unmuteMicrophone();
 }
+
+
+
+
+
+
+
+
 
 function updateClaudeResponse(data) {
     // Claude response UI removed - silently handle

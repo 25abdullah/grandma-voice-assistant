@@ -357,10 +357,15 @@ function clearClaudeResponse() {
 }
 
 async function startRecording() {
+    audioQueue = [];
+    isPlayingAudio = false;
+    isAISpeaking = false;
+    unmuteMicrophone();
       const humanInput = document.getElementById('transcriptionText');
       humanInput.textContent = 'Waiting...'
       aiResponse.textContent = 'Waiting...'
-       isFirstAIToken = true;
+       isFirstAIToken = true
+       
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ 
             audio: {

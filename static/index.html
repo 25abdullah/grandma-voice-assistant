@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Interface</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <!-- p5.js library for visualization -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+</head>
+<body>
+    <!-- Status indicator -->
+    <div class="status-info" style="position: absolute; top: 20px; left: 20px; z-index: 100; background: rgba(0,0,0,0.7); color: white; padding: 12px 20px; border-radius: 8px; font-family: monospace; font-size: 14px; backdrop-filter: blur(10px);">
+        <div>Status: <span id="connectionStatus">Disconnected</span></div>
+    </div>
+    <div style="position: fixed; top: 100px; left: 50%; transform: translateX(-50%); width: 600px; z-index: 50;">
+    <div style="background: rgba(0,0,0,0.8); padding: 20px; border-radius: 10px; margin-bottom: 20px; color: white;">
+        <h3 style="margin: 0 0 10px 0;">You Said:</h3>
+        <div id="transcriptionText">Waiting...</div>
+    </div>
+
+    <div style="background: rgba(0,0,0,0.8); padding: 20px; border-radius: 10px; color: white;">
+        <h3 style="margin: 0 0 10px 0;">AI:</h3>
+        <div id="aiResponseText">Waiting...</div>
+    </div>
+</div>
+    <!-- Control buttons -->
+    <div class="control-buttons" style="position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 15px; z-index: 100;">
+        <button id="connectBtn" class="btn btn-primary">Connect</button>
+        <button id="startBtn" class="btn btn-success" disabled>Start</button>
+        <button id="stopBtn" class="btn btn-danger" disabled>Stop</button>
+    </div>
+    <footer>
+        <p class="tagline">Brewed with love at CHAI Lab &#9749 </p>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

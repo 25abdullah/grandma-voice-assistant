@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+supabase
+sentence-transformers
+openai
+cartesia
+twilio
+aladhan-api
+requests
+python-multipart

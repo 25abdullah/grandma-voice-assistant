@@ -1,16 +1,12 @@
 #FastAPI imports 
 from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI, UploadFile,Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI,WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import BackgroundTasks
-
 
 #AI imports 
 from openai import OpenAI
 from cartesia import Cartesia
 
-#File writing imports 
-import uuid
 from io import BytesIO
 import json 
 
@@ -26,8 +22,6 @@ from datetime import datetime, timedelta
 
 #prayer times 
 import aladhan
-
-from sentence_transformers import SentenceTransformer
 
 
 from dotenv import load_dotenv
@@ -90,7 +84,7 @@ client_stt = OpenAI(
     base_url=stt_base_url
 )
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+
 
 
 app.mount("/audio", StaticFiles(directory="audio_files"), name="audio") #for playing  audio 
@@ -562,13 +556,11 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_text(json.dumps({ #send what  the user had said 
                 "type": "transcription",
                 "text": transcript_text}))
-            unique_value = uuid.uuid4()
             ai_response_text, tool_called = await handle_tool_call(transcript_text, websocket)
-            audio_filename = generate_audio(ai_response_text, unique_value) #save ai response file name + paly audio 
 
             #tell front-end everything is done (apart from saving but user does not care)
-            await websocket.send_text("done")
-            save_messages("user", transcript_text, ai_response_text, audio_filename, tool_called) #save message name 
+            await websocket.send_text(json.dumps({"type": "done"}))
+            save_messages("user", transcript_text, ai_response_text, None, tool_called) #save message name 
             
     except WebSocketDisconnect:
         print("disconnected.")
@@ -589,113 +581,145 @@ def transcribe_audio(audio_file):
     return transcript.text
 
 async def handle_tool_call(transcript_text, websocket: WebSocket):
-    # Get embedding and search memories
-    query_embedding = model.encode(transcript_text).tolist()
-    memories = supabase_client.rpc("match_memories", {
-        "query_embedding": query_embedding, 
-        "match_count": 3
-    }).execute()
+    messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": transcript_text}]
     
-    # Get recent messages
-    recent_messages = supabase_client.table("notes").select("*").order("created_at", desc=True).limit(10).execute()
-    conversation_history = []
-    for msg in reversed(recent_messages.data):
-        role = "assistant" if msg["username"] == "AI" else "user"
-        conversation_history.append({
-            "role": role,
-            "content": msg["message"]
-        })
-    
-    # Add memory chunks to system prompt if found
-    memory_text = ""
-    if memories.data:
-        for mem in memories.data:
-            memory_text += mem['conversation_chunk'] + " "
-    
-    # Call LLM
     response = agent_delegator.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
-        messages=[
-            {"role": "system", "content": system_prompt + "\n\nPast context: " + memory_text},
-            {"role": "user", "content": transcript_text}
-        ],
-        tools=tools,
-        stream=False
-    )
-    
-    tool_called = None
+        messages=messages,tools=tools,stream=False)
+    tool_called = None 
     
     if response.choices[0].message.tool_calls:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": transcript_text},
-            response.choices[0].message  
-        ]
-        for tool_call in response.choices[0].message.tool_calls:
-            function_name = tool_call.function.name
-            function_args = json.loads(tool_call.function.arguments)
-            tool_called = function_name
-            
-            print(f"Tool: {function_name} | Args: {function_args}")
-            
-            if function_name == "find_contact":
-                result = find_contact(function_args.get("person", ""))
-            elif function_name == "call_person":
-                result = call_person(function_args.get("person", ""))
-            elif function_name == "find_pakistan_news":
-                result = find_pakistan_news()
-            elif function_name == "get_last_ai_message":
-                result = get_last_ai_message()
-            elif function_name == "get_prayer_time":
-                result = get_prayer_time(function_args.get("prayer_name", ""))
-            elif function_name == "get_last_user_message":
-                result = get_last_user_message()
-            else:
-                result = "Tool not found"
-            
-            messages.append({
-                "tool_call_id": tool_call.id,
-                "role": "tool",
-                "name": function_name,
-                "content": str(result)
-            })
-        
-        final_response = agent_delegator.chat.completions.create(
-            model="nvidia/nemotron-3-nano-30b-a3b:free",
-            messages=messages,
-            stream=False
-        )
-        
-        full_response = final_response.choices[0].message.content
+        function_name = response.choices[0].message.tool_calls[0].function.name
+        function_args = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
+        tool_called = function_name
+        await stream_ack_text_and_audio(function_name, function_args, websocket)
+        tool_result = execute_tool(function_name, function_args)
+        messages.append(response.choices[0].message)
+        messages.append({"tool_call_id": response.choices[0].message.tool_calls[0].id,
+                         "role": "tool",
+                         "name": function_name,
+                         "content": str(tool_result)})
+        full_response = await stream_response_text_and_audio(messages, websocket)
     else:
-        full_response = response.choices[0].message.content
-    
-    await websocket.send_text(full_response)
-    
+        full_response = await stream_response_text_and_audio(messages, websocket)
     return full_response, tool_called
+         
+        
+        
+        
+        
+async def stream_ack_text_and_audio(function_name, function_args, websocket):
+    ack_prompt = '''You are a brief voice assistant. Generate ONE short sentence acknowledging you are about to perform the requested action. 
+        Be warm and natural. Nothing more than one sentence.'''
+    ack_messages = [
+    {"role": "system", "content": ack_prompt},
+    {"role": "user", "content": f"Tool being called: {function_name}, Args: {function_args}"}]
+    ack_response = agent_delegator.chat.completions.create(
+        model="nvidia/nemotron-3-nano-30b-a3b:free",
+        messages=ack_messages,
+        stream=True)
     
-#text, uiud random number -> text 
-#creates the audio response using the tts llm and returns the name of the corresponding audio file
-def generate_audio(text, unique_id):
-    if not text or not text.strip():
-        text = "I didn't catch that. Could you try again?"
-    chunk_iter = client_tts.tts.bytes(
-    model_id="sonic-3-latest",
-    transcript=str(text),
-    voice={
+    await stream_text_and_audio(ack_response, websocket)
+    
+    
+    
+           
+        
+    
+def execute_tool(function_name, function_args):
+    if function_name == "find_contact":
+        result = find_contact(function_args.get("person", ""))
+    elif function_name == "call_person":
+        result = call_person(function_args.get("person", ""))
+    elif function_name == "find_pakistan_news":
+        result = find_pakistan_news()
+    elif function_name == "get_last_ai_message":
+        result = get_last_ai_message()
+    elif function_name == "get_prayer_time":
+        result = get_prayer_time(function_args.get("prayer_name", ""))
+    elif function_name == "get_last_user_message":
+        result = get_last_user_message()
+    else:
+        result = "Tool not found"
+    return result 
+        
+        
+async def stream_response_text_and_audio(messages, websocket):
+    
+    final_response = agent_delegator.chat.completions.create(
+        model="nvidia/nemotron-3-nano-30b-a3b:free",
+        messages=messages,
+        stream=True
+    )
+    return await stream_text_and_audio(final_response, websocket)
+
+
+
+
+
+async def stream_text_and_audio(llm_response, websocket):
+    build_response = ""
+    buffer = "" 
+    for chunk in llm_response:
+        token = chunk.choices[0].delta.content
+        if token:
+            build_response += token
+            buffer += token 
+            await websocket.send_text(json.dumps({"type": "token", "text": token})) #building up the text token by token 
+            
+            '''bottom part down here is for the voice '''
+            sentence, after = extract_sentence(buffer)
+            if sentence: #if we see that we have a full sentence
+                ai_response_audio = generate_audio_bytes(sentence) #generate audio for it 
+                await websocket.send_bytes(ai_response_audio)
+                buffer = after #now make the next sentence the next buffer 
+    if buffer: #if we have any remaining audio that needs to be flushed after the loop, flush it out 
+        ai_response_audio = generate_audio_bytes(buffer)
+        await websocket.send_bytes(ai_response_audio)
+    return build_response
+    
+    
+    
+      
+def extract_sentence(buffer):
+    """
+    The purpose of this function is to extract the sentence and return the full sentence and what is coming after the sentence.
+    """
+    sentence_stoppers = ["! ", ". ", "? "]
+    found_element = next((stopper for stopper in sentence_stoppers if stopper in buffer), None)
+    if found_element:
+        position_of_buffer = buffer.index(found_element) 
+        prior_to_buffer = buffer[:position_of_buffer +1]
+        after_buffer = buffer[position_of_buffer+1:]
+        return prior_to_buffer, after_buffer
+    else:
+        return None, buffer #we have no full sentence since there is no buffer 
+    
+    
+# text -> audio bytes
+# given a full response, turns it into audio bytes
+def generate_audio_bytes(response):
+    if not response or not response.strip():
+        response = "I didn't catch that. Could you try again?"
+    chunks_of_audio = client_tts.tts.bytes(
+        model_id="sonic-3-latest",
+        transcript=str(response),
+        voice={
             "mode": "id",
-            "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
-    },
-    output_format={
+            "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",},
+        output_format={
             "container": "wav",
             "sample_rate": 44100,
-            "encoding": "pcm_s16le",
-    },
-    )
-    with open(f"audio_files/sonic{unique_id}.wav", "wb") as f:
-        for chunk in chunk_iter:
-            f.write(chunk)
-    return f"sonic{unique_id}.wav"
+            "encoding": "pcm_s16le",},)
+
+    sentence_audio = b""
+    for chunk in chunks_of_audio:
+        sentence_audio += chunk
+    return sentence_audio
+
+
+
+
 
 #saves the username, user message, ai message, and audio file name to the data base
 def save_messages(username, user_message, ai_message, audio_file, tool_called=None):
@@ -728,6 +752,15 @@ def get_messages():
     response = supabase_client.table("notes").select("*").execute()
     all_data = response.data
     return all_data
+
+
+
+
+
+
+
+
+
 
 
 

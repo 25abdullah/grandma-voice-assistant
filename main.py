@@ -562,12 +562,13 @@ async def websocket_endpoint(websocket: WebSocket):
             state["is_responding"] = False 
             if current_task:
                 current_task.cancel()
-            audio_file = BytesIO(data)
+            audio_file = BytesIO(data) #we have the audio now, so in the background (seperate thread), we can transcribe it 
             transcript_text = await asyncio.to_thread(transcribe_audio, audio_file) #transcribe "file-like object", needed to make into thread since transcrible_audio is syncrhonous (blocking)
-            await websocket.send_text(json.dumps({ #send what  the user had said 
+            await websocket.send_text(json.dumps({ #send what the user has once we have what we need from transcript_text  
                 "type": "transcription",
                 "text": transcript_text}))
             state["is_responding"] = True
+            #in the background of the event loop, we want to handle tool calling so that we can continue to hear for other audio, other wise the event loop gets paused 
             current_task = asyncio.create_task(handle_tool_call(transcript_text, websocket, state)) #we made this create_task because handle_tool_call is async + Run this coroutine concurrently in the background, don’t block the current loop
             
             
@@ -592,6 +593,7 @@ def transcribe_audio(audio_file):
     )
     return transcript.text
 
+#we made this async since the LLM call has an await 
 async def handle_tool_call(transcript_text, websocket: WebSocket, state):
     messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": transcript_text}]
     
@@ -627,9 +629,9 @@ async def handle_tool_call(transcript_text, websocket: WebSocket, state):
         
         
         
+
         
-        
-        
+#LLm call has an await so this must be async
 async def stream_ack_text_and_audio(function_name, function_args, websocket, state):
     ack_prompt = '''You are a brief voice assistant. Generate ONE short sentence acknowledging you are about to perform the requested action. 
         Be warm and natural. Nothing more than one sentence.'''
@@ -665,7 +667,7 @@ def execute_tool(function_name, function_args):
         result = "Tool not found"
     return result 
         
-        
+#has await (for eaach chunk) so need async     
 async def stream_response_text_and_audio(messages, websocket,state):
     final_response = await agent_delegator.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
@@ -693,11 +695,11 @@ async def stream_text_and_audio(llm_response, websocket, state):
             '''bottom part down here is for the voice '''
             sentence, after = extract_sentence(buffer)
             if sentence: #if we see that we have a full sentence
-                ai_response_audio = await asyncio.to_thread(generate_audio_bytes, sentence) #generate audio for it 
+                ai_response_audio = await asyncio.to_thread(generate_audio_bytes, sentence) #generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
                 await websocket.send_bytes(ai_response_audio)
                 buffer = after #now make the next sentence the next buffer 
     if buffer: #if we have any remaining audio that needs to be flushed after the loop, flush it out 
-        ai_response_audio = await asyncio.to_thread(generate_audio_bytes, buffer)
+        ai_response_audio = await asyncio.to_thread(generate_audio_bytes, buffer) #generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
         await websocket.send_bytes(ai_response_audio)
     return build_response
     

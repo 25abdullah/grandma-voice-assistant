@@ -4,7 +4,7 @@ from fastapi import FastAPI,WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 #AI imports 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from cartesia import Cartesia
 
 from io import BytesIO
@@ -72,10 +72,11 @@ supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 #AI clients  
 
 #orchestrates and figures out what tool to delegate to + returns a nice message at the end if we do a tool call 
-agent_delegator = OpenAI(
+agent_delegator = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key= openrouter_key
 )
+
 
 #text to speech AI  
 client_tts = Cartesia(api_key=cartesia_key)
@@ -562,12 +563,12 @@ async def websocket_endpoint(websocket: WebSocket):
             if current_task:
                 current_task.cancel()
             audio_file = BytesIO(data)
-            transcript_text = transcribe_audio(audio_file) #transcribe "file-like object"
+            transcript_text = await asyncio.to_thread(transcribe_audio, audio_file) #transcribe "file-like object", needed to make into thread since transcrible_audio is syncrhonous (blocking)
             await websocket.send_text(json.dumps({ #send what  the user had said 
                 "type": "transcription",
                 "text": transcript_text}))
             state["is_responding"] = True
-            current_task = asyncio.create_task(handle_tool_call(transcript_text, websocket, state))
+            current_task = asyncio.create_task(handle_tool_call(transcript_text, websocket, state)) #we made this create_task because handle_tool_call is async + Run this coroutine concurrently in the background, don’t block the current loop
             
             
     except WebSocketDisconnect:
@@ -594,7 +595,7 @@ def transcribe_audio(audio_file):
 async def handle_tool_call(transcript_text, websocket: WebSocket, state):
     messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": transcript_text}]
     
-    response = agent_delegator.chat.completions.create(
+    response = await agent_delegator.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
         messages=messages,tools=tools,stream=False)
     tool_called = None 
@@ -622,13 +623,20 @@ async def handle_tool_call(transcript_text, websocket: WebSocket, state):
         
         
         
+        
+        
+        
+        
+        
+        
+        
 async def stream_ack_text_and_audio(function_name, function_args, websocket, state):
     ack_prompt = '''You are a brief voice assistant. Generate ONE short sentence acknowledging you are about to perform the requested action. 
         Be warm and natural. Nothing more than one sentence.'''
     ack_messages = [
     {"role": "system", "content": ack_prompt},
     {"role": "user", "content": f"Tool being called: {function_name}, Args: {function_args}"}]
-    ack_response = agent_delegator.chat.completions.create(
+    ack_response = await agent_delegator.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
         messages=ack_messages,
         stream=True)
@@ -659,7 +667,7 @@ def execute_tool(function_name, function_args):
         
         
 async def stream_response_text_and_audio(messages, websocket,state):
-    final_response = agent_delegator.chat.completions.create(
+    final_response = await agent_delegator.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
         messages=messages,
         stream=True
@@ -673,7 +681,7 @@ async def stream_response_text_and_audio(messages, websocket,state):
 async def stream_text_and_audio(llm_response, websocket, state):
     build_response = ""
     buffer = "" 
-    for chunk in llm_response:
+    async for chunk in llm_response:
         if not state["is_responding"]:
             break
         token = chunk.choices[0].delta.content
@@ -685,11 +693,11 @@ async def stream_text_and_audio(llm_response, websocket, state):
             '''bottom part down here is for the voice '''
             sentence, after = extract_sentence(buffer)
             if sentence: #if we see that we have a full sentence
-                ai_response_audio = generate_audio_bytes(sentence) #generate audio for it 
+                ai_response_audio = await asyncio.to_thread(generate_audio_bytes, sentence) #generate audio for it 
                 await websocket.send_bytes(ai_response_audio)
                 buffer = after #now make the next sentence the next buffer 
     if buffer: #if we have any remaining audio that needs to be flushed after the loop, flush it out 
-        ai_response_audio = generate_audio_bytes(buffer)
+        ai_response_audio = await asyncio.to_thread(generate_audio_bytes, buffer)
         await websocket.send_bytes(ai_response_audio)
     return build_response
     

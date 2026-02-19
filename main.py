@@ -558,7 +558,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept() #accept connection 
     try:
         while True: #receive the bytes and store into a "file-like object"
-            data = await websocket.receive_bytes()
+            data = await websocket.receive_bytes() #we use await because we need the result immediatetely so we pause execution  
             state["is_responding"] = False 
             if current_task:
                 current_task.cancel()
@@ -648,8 +648,7 @@ async def stream_ack_text_and_audio(function_name, function_args, websocket, sta
     
     
            
-        
-    
+       
 def execute_tool(function_name, function_args):
     if function_name == "find_contact":
         result = find_contact(function_args.get("person", ""))
@@ -827,3 +826,5 @@ process_chunks(chunks)
 print(f"Loaded {len(chunks)} memory chunks into database!")
 
 '''
+
+

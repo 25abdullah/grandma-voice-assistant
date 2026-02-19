@@ -29,6 +29,9 @@ import os
 
 import asyncio
 
+from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+
 
 #initialize app and set up cors 
 app = FastAPI()
@@ -87,14 +90,14 @@ client_stt = OpenAI(
     base_url=stt_base_url
 )
 
-
+embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 
 app.mount("/audio", StaticFiles(directory="audio_files"), name="audio") #for playing  audio 
 app.mount("/static", StaticFiles(directory="static"), name="static") #so that things in static can acess this API 
 
 
-
+CONVERSATION_ID = "grandma"
 
 
 abdullah_variations = [
@@ -547,6 +550,13 @@ You: "Here are the latest headlines from Pakistan: ..."
 
 User: "Abdullah ko call karo aur Dhuhr ka waqt batao"  
 You: "I'm calling Abdullah now. The Dhuhr prayer is at 12:30 PM"
+
+--- CONVERSATION MEMORY ---
+Here are relevant past exchanges with this user. Use them to maintain context, resolve ambiguous pronouns like "him" or "her", and personalize responses:
+
+{memory_text}
+
+If no memory is shown, this is the start of the conversation.
 """
 
 
@@ -558,7 +568,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept() #accept connection 
     try:
         while True: #receive the bytes and store into a "file-like object"
-            data = await websocket.receive_bytes() #we use await because we need the result immediatetely so we pause execution  
+            data = await websocket.receive_bytes() #we use await because we need the result immediatetely so we pause execution of this function (not the loop)
             state["is_responding"] = False 
             if current_task:
                 current_task.cancel()
@@ -598,11 +608,13 @@ def transcribe_audio(audio_file):
 #we made this async since the LLM call has an await 
 async def handle_tool_call(transcript_text, websocket: WebSocket, state):
     try:
-        messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": transcript_text}]
+        memory_text = await asyncio.to_thread(retrieve_context,CONVERSATION_ID, transcript_text)
+        messages = [{"role": "system", "content": system_prompt.format(memory_text=memory_text)}, {"role": "user", "content": transcript_text}]
         response = await agent_delegator.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
         messages=messages,tools=tools,stream=False)
         tool_called = None 
+        
         if response.choices[0].message.tool_calls:
             function_name = response.choices[0].message.tool_calls[0].function.name
             function_args = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
@@ -770,14 +782,26 @@ def save_messages(username, user_message, ai_message, audio_file, tool_called=No
     data_to_insert.append(user_data_to_insert)
     data_to_insert.append(ai_data_to_insert)
     try:
-        #insert user message to database 
+        #insert  message to database 
         message_response = (
             supabase_client.table("notes")
             .insert(data_to_insert)
             .execute()
-            
         )
-
+        get_conversation_collection(CONVERSATION_ID).add_texts(
+        texts=[user_data_to_insert["message"]],
+        ids=[f"{CONVERSATION_ID}_user_{datetime.now().timestamp()}"],
+        metadatas=[
+            {"type": "message", "role": "user", "conversation_id": CONVERSATION_ID}
+        ],
+    )
+        get_conversation_collection(CONVERSATION_ID).add_texts(
+        texts=[ai_data_to_insert["message"]],
+        ids=[f"{CONVERSATION_ID}_assistant_{datetime.now().timestamp()}"],
+        metadatas=[
+            {"type": "message", "role": "assistant", "conversation_id": CONVERSATION_ID}
+        ],
+    )
         print("message inserted successfully:", message_response.data)
     except Exception as e:
         print("An error occurred:", e)
@@ -801,9 +825,43 @@ def get_messages():
 
 
 
+def retrieve_context(conversation_id, query):
+    """
+    Retrieves relevant context from conversation and global collections using filtered metadata queries.
+    """
+    conv = get_conversation_collection(conversation_id)
+    same_conversation_msgs = ""
+    for res in safe_search(conv, query, k=5, filter={"type": "message"}):
+        same_conversation_msgs += res.page_content + "\n"
+    print(f"[1] same_conversation_msgs:\n{same_conversation_msgs}")
+    
+    return same_conversation_msgs
 
 
 
+def safe_search(collection, query, k, filter=None):
+    """
+    finds K number of similar results with respect to query.
+
+    :param collection: the collection to search from
+    :param query: the message that the user sent
+    :param k: the number of similar results that we are looking for
+    :param filter: to filter by metadata to find the type of data we want (message, file, chunk)
+    """
+    try:
+        results = collection.similarity_search(query=query, k=k, filter=filter)
+    except Exception as e:
+        results = []
+    return results
+
+
+
+def get_conversation_collection(conversation_id):
+    return Chroma(
+        persist_directory="./chroma_db",
+        embedding_function=embeddings,
+        collection_name=f"conv_{conversation_id}",
+    )
 
 
 

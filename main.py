@@ -564,18 +564,20 @@ async def websocket_endpoint(websocket: WebSocket):
                 current_task.cancel()
             audio_file = BytesIO(data) #we have the audio now, so in the background (seperate thread), we can transcribe it 
             transcript_text = await asyncio.to_thread(transcribe_audio, audio_file) #transcribe "file-like object", needed to make into thread since transcrible_audio is syncrhonous (blocking)
+            if not transcript_text.strip():
+                state["is_responding"] = False
+                continue
             await websocket.send_text(json.dumps({ #send what the user has once we have what we need from transcript_text  
                 "type": "transcription",
                 "text": transcript_text}))
             state["is_responding"] = True
             #in the background of the event loop, we want to handle tool calling so that we can continue to hear for other audio, other wise the event loop gets paused 
             current_task = asyncio.create_task(handle_tool_call(transcript_text, websocket, state)) #we made this create_task because handle_tool_call is async + Run this coroutine concurrently in the background, don’t block the current loop
-            
-            
     except WebSocketDisconnect:
         print("disconnected.")
     except Exception as e:
         print(f"Error: {e}")
+    
             
         
         
@@ -595,30 +597,34 @@ def transcribe_audio(audio_file):
 
 #we made this async since the LLM call has an await 
 async def handle_tool_call(transcript_text, websocket: WebSocket, state):
-    messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": transcript_text}]
-    
-    response = await agent_delegator.chat.completions.create(
+    try:
+        messages=[{"role": "system", "content": system_prompt},{"role": "user", "content": transcript_text}]
+        response = await agent_delegator.chat.completions.create(
         model="nvidia/nemotron-3-nano-30b-a3b:free",
         messages=messages,tools=tools,stream=False)
-    tool_called = None 
-    
-    if response.choices[0].message.tool_calls:
-        function_name = response.choices[0].message.tool_calls[0].function.name
-        function_args = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
-        tool_called = function_name
-        await stream_ack_text_and_audio(function_name, function_args, websocket, state)
-        tool_result = execute_tool(function_name, function_args)
-        messages.append(response.choices[0].message)
-        messages.append({"tool_call_id": response.choices[0].message.tool_calls[0].id,
+        tool_called = None 
+        if response.choices[0].message.tool_calls:
+            function_name = response.choices[0].message.tool_calls[0].function.name
+            function_args = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
+            tool_called = function_name
+            await stream_ack_text_and_audio(function_name, function_args, websocket, state)
+            tool_result = await asyncio.to_thread(execute_tool, function_name, function_args, state)
+            if not state["is_responding"]:
+                print("interrupted, returning early")
+                return 
+            messages.append(response.choices[0].message)
+            messages.append({"tool_call_id": response.choices[0].message.tool_calls[0].id,
                          "role": "tool",
                          "name": function_name,
                          "content": str(tool_result)})
-        ai_response = await stream_response_text_and_audio(messages, websocket, state)
-    else:
-        ai_response = await stream_response_text_and_audio(messages, websocket, state)
-    await websocket.send_text(json.dumps({"type": "done"}))
-    save_messages("user", transcript_text, ai_response, None, tool_called) 
-    return ai_response, tool_called
+            ai_response = await stream_response_text_and_audio(messages, websocket, state)
+        else:
+            ai_response = await stream_response_text_and_audio(messages, websocket, state)
+        await websocket.send_text(json.dumps({"type": "done"}))
+        save_messages("user", transcript_text, ai_response, None, tool_called) 
+    except Exception as e:
+        print(f"something went wrong:{e}")
+    return 
 
          
         
@@ -649,7 +655,10 @@ async def stream_ack_text_and_audio(function_name, function_args, websocket, sta
     
            
        
-def execute_tool(function_name, function_args):
+def execute_tool(function_name, function_args,state):
+    if not state["is_responding"]:
+        print("interrupted, returning early")
+        return ""
     if function_name == "find_contact":
         result = find_contact(function_args.get("person", ""))
     elif function_name == "call_person":
@@ -680,28 +689,31 @@ async def stream_response_text_and_audio(messages, websocket,state):
 
 
 async def stream_text_and_audio(llm_response, websocket, state):
-    build_response = ""
-    buffer = "" 
-    async for chunk in llm_response:
-        if not state["is_responding"]:
-            break
-        token = chunk.choices[0].delta.content
-        if token:
-            build_response += token
-            buffer += token 
-            await websocket.send_text(json.dumps({"type": "token", "text": token})) #building up the text token by token 
-            
-            '''bottom part down here is for the voice '''
-            sentence, after = extract_sentence(buffer)
-            if sentence: #if we see that we have a full sentence
-                ai_response_audio = await asyncio.to_thread(generate_audio_bytes, sentence) #generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
-                await websocket.send_bytes(ai_response_audio)
-                buffer = after #now make the next sentence the next buffer 
-    if buffer: #if we have any remaining audio that needs to be flushed after the loop, flush it out 
-        ai_response_audio = await asyncio.to_thread(generate_audio_bytes, buffer) #generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
-        await websocket.send_bytes(ai_response_audio)
+    try:
+        build_response = ""
+        buffer = "" 
+        async for chunk in llm_response:
+            if not state["is_responding"]:
+                break
+            if not chunk.choices:  
+                continue
+            token = chunk.choices[0].delta.content
+            if token:
+                build_response += token
+                buffer += token 
+                await websocket.send_text(json.dumps({"type": "token", "text": token})) #building up the text token by token 
+                '''bottom part down here is for the voice '''
+                sentence, after = extract_sentence(buffer)
+                if sentence: #if we see that we have a full sentence
+                    ai_response_audio = await asyncio.to_thread(generate_audio_bytes, sentence) #generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
+                    await websocket.send_bytes(ai_response_audio)
+                    buffer = after #now make the next sentence the next buffer 
+        if buffer.strip(): #if we have any remaining audio that needs to be flushed after the loop, flush it out 
+            ai_response_audio = await asyncio.to_thread(generate_audio_bytes, buffer) #generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
+            await websocket.send_bytes(ai_response_audio)
+    except Exception as e:
+         print(f"stream_text_and_audio error: {e}")
     return build_response
-    
     
     
       
@@ -723,23 +735,28 @@ def extract_sentence(buffer):
 # text -> audio bytes
 # given a full response, turns it into audio bytes
 def generate_audio_bytes(response):
-    if not response or not response.strip():
-        response = "I didn't catch that. Could you try again?"
-    chunks_of_audio = client_tts.tts.bytes(
-        model_id="sonic-3-latest",
-        transcript=str(response),
-        voice={
+    try:
+        if not response or not response.strip():
+            response = "I didn't catch that. Could you try again?"
+            
+        chunks_of_audio = client_tts.tts.bytes(
+            model_id="sonic-3-latest",
+            transcript=str(response),
+            voice={
             "mode": "id",
             "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",},
-        output_format={
+            output_format={
             "container": "wav",
             "sample_rate": 44100,
             "encoding": "pcm_s16le",},)
 
-    sentence_audio = b""
-    for chunk in chunks_of_audio:
-        sentence_audio += chunk
-    return sentence_audio
+        sentence_audio = b""
+        for chunk in chunks_of_audio:
+            sentence_audio += chunk
+        return sentence_audio
+    except Exception as e:
+        print("An error occurred:", e)
+        return b""
 
 
 

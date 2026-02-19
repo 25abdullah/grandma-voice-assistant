@@ -93,9 +93,11 @@ async function connect() {
                  const data = JSON.parse(event.data);
                  if (data.type === 'transcription') {
                      isInterrupted = false; 
+                     aiResponse.textContent = ""
                     userTranscription.textContent = data.text;
                  }
                  else if (data.type === 'token') {
+                    if (isInterrupted) { return; }  
                      if (isFirstAIToken) {
                 aiResponse.textContent = ''
                 isFirstAIToken = false;
@@ -373,6 +375,7 @@ async function startRecording() {
     isPlayingAudio = false;
     isAISpeaking = false;
     unmuteMicrophone();
+    startBtn.disabled = false;  
       const humanInput = document.getElementById('transcriptionText');
       humanInput.textContent = 'Waiting...'
       aiResponse.textContent = 'Waiting...'

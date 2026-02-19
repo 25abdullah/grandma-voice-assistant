@@ -1,26 +1,26 @@
-#FastAPI imports 
+# FastAPI imports
 from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI,WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-#AI imports 
+# AI imports
 from openai import OpenAI, AsyncOpenAI
 from cartesia import Cartesia
 
 from io import BytesIO
-import json 
+import json
 
-#database import 
+# database import
 from supabase import create_client, Client
 
-#phone import 
+# phone import
 from twilio.rest import Client
 
-#for finding news 
+# for finding news
 import requests
 from datetime import datetime, timedelta
 
-#prayer times 
+# prayer times
 import aladhan
 
 
@@ -33,16 +33,15 @@ from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 
 
-#initialize app and set up cors 
+# initialize app and set up cors
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 load_dotenv()
@@ -57,84 +56,118 @@ twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
 twilio_from = os.getenv("TWILIO_FROM_NUMBER")
 news_api_key = os.getenv("NEWS_API_KEY")
 
-#calling client credentials and initialization
+# calling client credentials and initialization
 ACCOUNT_SID = twilio_sid
 AUTH_TOKEN = twilio_token
 call_client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
 
-#Supabase client credentials and initialization for storing messages + contacts + rag (soon)
-SUPABASE_URL= supabase_url
-SUPABASE_KEY= supabase_key
+# Supabase client credentials and initialization for storing messages + contacts + rag (soon)
+SUPABASE_URL = supabase_url
+SUPABASE_KEY = supabase_key
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+# AI clients
 
-
-
-#AI clients  
-
-#orchestrates and figures out what tool to delegate to + returns a nice message at the end if we do a tool call 
+# orchestrates and figures out what tool to delegate to + returns a nice message at the end if we do a tool call
 agent_delegator = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key= openrouter_key
+    base_url="https://openrouter.ai/api/v1", api_key=openrouter_key
 )
 
 
-#text to speech AI  
+# text to speech AI
 client_tts = Cartesia(api_key=cartesia_key)
 
-#speech to text AI 
-client_stt = OpenAI(
-    api_key=cartesia_key, 
-    base_url=stt_base_url
-)
+# speech to text AI
+client_stt = OpenAI(api_key=cartesia_key, base_url=stt_base_url)
 
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 
-app.mount("/audio", StaticFiles(directory="audio_files"), name="audio") #for playing  audio 
-app.mount("/static", StaticFiles(directory="static"), name="static") #so that things in static can acess this API 
+app.mount(
+    "/audio", StaticFiles(directory="audio_files"), name="audio"
+)  # for playing  audio
+app.mount(
+    "/static", StaticFiles(directory="static"), name="static"
+)  # so that things in static can acess this API
 
 
 CONVERSATION_ID = "grandma"
 
 
 abdullah_variations = [
-    "Abdullah", "Abdulla", "Abdulah", "Abdullahh", "Abdu", "Abd", "Abu",
-    "Abdullah Ismail", "Abdullah Ismal", "Abdullah Ismael", "Abdulla Ismail",
-    "Abdulah Ismail", "Abdu Ismail"
+    "Abdullah",
+    "Abdulla",
+    "Abdulah",
+    "Abdullahh",
+    "Abdu",
+    "Abd",
+    "Abu",
+    "Abdullah Ismail",
+    "Abdullah Ismal",
+    "Abdullah Ismael",
+    "Abdulla Ismail",
+    "Abdulah Ismail",
+    "Abdu Ismail",
 ]
 
 jauhar_variations = [
-    "Jauhar", "Johar", "Jowhar", "Jawar", "Joharr", "Jau", "Jar",
-    "Jauhar Ismail", "Johar Ismail", "Jowhar Ismail", "Jawar Ismail",
-    "Jauhar Ismal", "Jauhar Ismael", "Jawhar Ismail", "Jouhar Ismail"
+    "Jauhar",
+    "Johar",
+    "Jowhar",
+    "Jawar",
+    "Joharr",
+    "Jau",
+    "Jar",
+    "Jauhar Ismail",
+    "Johar Ismail",
+    "Jowhar Ismail",
+    "Jawar Ismail",
+    "Jauhar Ismal",
+    "Jauhar Ismael",
+    "Jawhar Ismail",
+    "Jouhar Ismail",
 ]
 
 fehmeeda_variations = [
-    "Fehmeeda", "Femi", "Femeeda", "Fehmida", 
-    "Fhamida", "Fhamidah", "Femi the Meta", 
-    "Fahmida", "Femida", "Fahmida.Femida", "Femida Mehta", "Femi the better",
-    "Famy", "Fampa",
-    "Fehmeeda Mehta", "Fehmida Mehta", "Fhamida Mehta", "Fahmida Mehta",
-    "Fehmeeda Meta", "Fehmeeda Metta", "Femi Mehta", "Femeeda Mehta"
+    "Fehmeeda",
+    "Femi",
+    "Femeeda",
+    "Fehmida",
+    "Fhamida",
+    "Fhamidah",
+    "Femi the Meta",
+    "Fahmida",
+    "Femida",
+    "Fahmida.Femida",
+    "Femida Mehta",
+    "Femi the better",
+    "Famy",
+    "Fampa",
+    "Fehmeeda Mehta",
+    "Fehmida Mehta",
+    "Fhamida Mehta",
+    "Fahmida Mehta",
+    "Fehmeeda Meta",
+    "Fehmeeda Metta",
+    "Femi Mehta",
+    "Femeeda Mehta",
 ]
-#string -> string
-#match variations to contact
+
+
+# string -> string
+# match variations to contact
 def find_contact_simple(user_input):
     input_lower = user_input.lower()
-
 
     for name in abdullah_variations:
         if input_lower == name.lower():
             return "Abdullah Ismail"
-    
 
     for name in jauhar_variations:
         if input_lower == name.lower():
             return "Jauhar Ismail"
-    
 
     for name in fehmeeda_variations:
         if input_lower == name.lower():
@@ -143,66 +176,68 @@ def find_contact_simple(user_input):
     return f"{user_input} number was not found."
 
 
-    
-# string -> string 
-#finds a number based on the name  
+# string -> string
+# finds a number based on the name
 def find_contact(person):
     canonical_name = find_contact_simple(person)
-    if  "not found" in canonical_name:
+    if "not found" in canonical_name:
         return f"{person} number was not found."
 
     try:
-        response = supabase_client.table("contacts").select("number").ilike("name", f"%{canonical_name}%").single().execute()
-        return response.data["number"]  
+        response = (
+            supabase_client.table("contacts")
+            .select("number")
+            .ilike("name", f"%{canonical_name}%")
+            .single()
+            .execute()
+        )
+        return response.data["number"]
     except:
         return f"{canonical_name} number was not found."
-   
 
-#string -> string
-#given a name, calls the person
+
+# string -> string
+# given a name, calls the person
 def call_person(person):
     person_number = find_contact(person)
-    try: 
+    try:
         call = call_client.calls.create(
-        url="http://demo.twilio.com/docs/voice.xml",
-        to=person_number,
-        from_=twilio_from,
+            url="http://demo.twilio.com/docs/voice.xml",
+            to=person_number,
+            from_=twilio_from,
         )
         return f"succesfully called {person_number}"
     except:
         return f"unable to call {person_number}"
-    
 
 
 # () -> string
-#returns the latest news in Pakistan 
+# returns the latest news in Pakistan
 def find_pakistan_news():
-    url = (f'https://newsapi.org/v2/everything?'
-       f'q=Pakistan News&'
-       f'language=en&'
-       f'from={datetime.now() - timedelta(days=7)}&'
-       f'sortBy=popularity&'
-       f'apiKey={news_api_key}')
+    url = (
+        f"https://newsapi.org/v2/everything?"
+        f"q=Pakistan News&"
+        f"language=en&"
+        f"from={datetime.now() - timedelta(days=7)}&"
+        f"sortBy=popularity&"
+        f"apiKey={news_api_key}"
+    )
     response = requests.get(url)
     articles = response.json()["articles"]
     news_list = []
-    for article in articles[0:5]:  
-       news_list.append(f"{article['title']}: {article['description']}")
-    if (len(news_list) == 0):
+    for article in articles[0:5]:
+        news_list.append(f"{article['title']}: {article['description']}")
+    if len(news_list) == 0:
         return "unable to fetch news."
     else:
         return "\n".join(news_list)
-    
 
 
-
-
-#get the last ai message 
+# get the last ai message
 def get_last_ai_message():
     try:
         response = (
-            supabase_client
-            .table("notes")
+            supabase_client.table("notes")
             .select("*")
             .eq("username", "AI")
             .order("created_at", desc=True)
@@ -216,15 +251,12 @@ def get_last_ai_message():
             return "I don't have anything to repeat yet."
     except:
         return "I'm sorry, I couldn't retrieve the last message."
-    
-
 
 
 def get_last_user_message():
     try:
         response = (
-            supabase_client
-            .table("notes")
+            supabase_client.table("notes")
             .select("*")
             .neq("username", "AI")
             .order("created_at", desc=True)
@@ -240,20 +272,8 @@ def get_last_user_message():
         return "I'm sorry, I couldn't retrieve the last message."
 
 
-
-
-
-#prayer mishearings 
-fajr_mishearings = [
-    "fajer",
-    "fajhr",
-    "fadjr",
-    "fajir",
-    "fajhar",
-    "fudge",
-    "fig",
-    "fr"
-]
+# prayer mishearings
+fajr_mishearings = ["fajer", "fajhr", "fadjr", "fajir", "fajhar", "fudge", "fig", "fr"]
 
 dhuhr_mishearings = [
     "duhr",
@@ -266,17 +286,10 @@ dhuhr_mishearings = [
     "zoor",
     "zuhur",
     "zhoor",
-    "dhur"
+    "dhur",
 ]
 
-asr_mishearings = [
-    "asir",
-    "asar",
-    "azr",
-    "usher",
-    "azur",
-    "assure"
-]
+asr_mishearings = ["asir", "asar", "azr", "usher", "azur", "assure"]
 
 maghrib_mishearings = [
     "magrib",
@@ -284,159 +297,140 @@ maghrib_mishearings = [
     "mag grip",
     "mag rib",
     "mag reb",
-    "mag grab"
+    "mag grab",
 ]
 
-isha_mishearings = [
-    "ishaa",
-    "esha",
-    "i she",
-    "ish",
-    "eye-sha"
-]
-      
-#load in the prayer times 
-# () -> list of dictionaries 
+isha_mishearings = ["ishaa", "esha", "i she", "ish", "eye-sha"]
+
+
+# load in the prayer times
+# () -> list of dictionaries
 def load_prayers():
     location = aladhan.Coordinates(42.2913, -71.71)
     client = aladhan.Client(location)
     adhans = client.get_today_times()
     prayer_entry = []
     for adhan in adhans:
-        prayer_entry.append(f"Prayer: {adhan.get_en_name()}, Time: {adhan.readable_timing()}")
+        prayer_entry.append(
+            f"Prayer: {adhan.get_en_name()}, Time: {adhan.readable_timing()}"
+        )
     return prayer_entry
 
 
-#string -> string
+# string -> string
 def get_prayer_time(prayer_name):
     prayers_list = load_prayers()
     for entry in prayers_list:
-        if prayer_name.lower() in entry.lower(): 
+        if prayer_name.lower() in entry.lower():
             return entry
     for entry in fajr_mishearings:
         if prayer_name.lower() in entry.lower():
-            return(prayers_list[0])
+            return prayers_list[0]
     for entry in dhuhr_mishearings:
         if prayer_name.lower() in entry.lower():
-            return(prayers_list[1])
+            return prayers_list[1]
     for entry in asr_mishearings:
         if prayer_name.lower() in entry.lower():
-            return (prayers_list[2])
+            return prayers_list[2]
     for entry in maghrib_mishearings:
         if prayer_name.lower() in entry.lower():
-            return (prayers_list[3])
+            return prayers_list[3]
     for entry in isha_mishearings:
         if prayer_name.lower() in entry.lower():
-            return (prayers_list[4])
+            return prayers_list[4]
     else:
-        return ("unable to find prayer")
+        return "unable to find prayer"
 
 
-
-
-
-
-
-
-
-#represents all the various functions that agent_delegator can call out to 
+# represents all the various functions that agent_delegator can call out to
 tools = [
     {
         "type": "function",
         "function": {
             "name": "find_contact",
             "description": "Search the contact database for a family member's phone number by name. Returns the phone number if found, or an error message if the contact doesn't exist. "
-                           "Handles partial names - 'Abdullah' matches 'Abdullah Ismail', 'Jauhar' matches 'Jauhar Ismail', 'Fehmeeda' matches 'Fehmeeda Mehta'. "
-                           "Use this when the user asks for someone's number or wants to know contact information.",
+            "Handles partial names - 'Abdullah' matches 'Abdullah Ismail', 'Jauhar' matches 'Jauhar Ismail', 'Fehmeeda' matches 'Fehmeeda Mehta'. "
+            "Use this when the user asks for someone's number or wants to know contact information.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "person": {
                         "type": "string",
-                        "description": "Name of the family member to look up (can be first name or full name)"
+                        "description": "Name of the family member to look up (can be first name or full name)",
                     }
                 },
-                "required": ["person"]
-            }
-        }
+                "required": ["person"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "call_person",
             "description": "Initiate a phone call to a family member using Twilio. "
-                           "This function will look up the contact's number and place the call. Use this when the user wants to call someone by name. "
-                           "The call will be made from the Twilio number to the contact's verified number.",
+            "This function will look up the contact's number and place the call. Use this when the user wants to call someone by name. "
+            "The call will be made from the Twilio number to the contact's verified number.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "person": {
                         "type": "string",
-                        "description": "Name of the person to call (first name or full name)"
+                        "description": "Name of the person to call (first name or full name)",
                     }
                 },
-                "required": ["person"]
-            }
-        }
+                "required": ["person"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "find_pakistan_news",
             "description": "Find the latest news in Pakistan. "
-                           "Use this when the user wants to hear about the news going on in Pakistan. The function retrieves the latest Pakistan news using a news API.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
+            "Use this when the user wants to hear about the news going on in Pakistan. The function retrieves the latest Pakistan news using a news API.",
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
-     {
+    {
         "type": "function",
         "function": {
             "name": "get_prayer_time",
             "description": "Given a prayer name, find out what time that prayer is. "
-                           "Use this when the user asks for what time a prayer is. The function will use a library to find the corresponding prayer time.",
+            "Use this when the user asks for what time a prayer is. The function will use a library to find the corresponding prayer time.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "prayer_name": {
                         "type": "string",
-                        "description": "Name of the prayer whose time we are looking for."
+                        "description": "Name of the prayer whose time we are looking for.",
                     }
                 },
-                "required": ["prayer_name"]
-            }
-        }
+                "required": ["prayer_name"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "get_last_ai_message",
             "description": "Returns the last message that the AI sent. "
-                           "Use this when the user says 'repeat that' or 'say that again'.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
+            "Use this when the user says 'repeat that' or 'say that again'.",
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "get_last_user_message",
             "description": "Returns the last message that the user sent. "
-                           "Use this when the user says 'what did I just say?' or 'repeat what I said'.",
-            "parameters": {
-                "type": "object",
-                "properties": {}
-            }
-        }
-    }
+            "Use this when the user says 'what did I just say?' or 'repeat what I said'.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
-#prompting the LLM to meet the specifications of being a voice assistant to my grandma. 
+# prompting the LLM to meet the specifications of being a voice assistant to my grandma.
 system_prompt = """
 You are an intelligent, helpful, and highly reliable voice assistant for an elderly Urdu-speaking grandmother. She frequently mixes Urdu and English in a single sentence (code-switching). 
 Your job is to understand her **intent**, handle mispronunciations and mishearings, and respond appropriately using available tools when necessary.  
@@ -563,41 +557,47 @@ If no memory is shown, this is the start of the conversation.
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     state = {"is_responding": False}
-    current_task = None 
-    
-    await websocket.accept() #accept connection 
+    current_task = None
+
+    await websocket.accept()  # accept connection
     try:
-        while True: #receive the bytes and store into a "file-like object"
-            data = await websocket.receive_bytes() #we use await because we need the result immediatetely so we pause execution of this function (not the loop)
-            state["is_responding"] = False 
+        while True:  # receive the bytes and store into a "file-like object"
+            data = (
+                await websocket.receive_bytes()
+            )  # we use await because we need the result immediatetely so we pause execution of this function (not the loop)
+            state["is_responding"] = False
             if current_task:
                 current_task.cancel()
-            audio_file = BytesIO(data) #we have the audio now, so in the background (seperate thread), we can transcribe it 
-            transcript_text = await asyncio.to_thread(transcribe_audio, audio_file) #transcribe "file-like object", needed to make into thread since transcrible_audio is syncrhonous (blocking)
+            audio_file = BytesIO(
+                data
+            )  # we have the audio now, so in the background (seperate thread), we can transcribe it
+            transcript_text = await asyncio.to_thread(
+                transcribe_audio, audio_file
+            )  # transcribe "file-like object", needed to make into thread since transcrible_audio is syncrhonous (blocking)
             if not transcript_text.strip():
                 state["is_responding"] = False
                 continue
-            await websocket.send_text(json.dumps({ #send what the user has once we have what we need from transcript_text  
-                "type": "transcription",
-                "text": transcript_text}))
+            await websocket.send_text(
+                json.dumps(
+                    {  # send what the user has once we have what we need from transcript_text
+                        "type": "transcription",
+                        "text": transcript_text,
+                    }
+                )
+            )
             state["is_responding"] = True
-            #in the background of the event loop, we want to handle tool calling so that we can continue to hear for other audio, other wise the event loop gets paused 
-            current_task = asyncio.create_task(handle_tool_call(transcript_text, websocket, state)) #we made this create_task because handle_tool_call is async + Run this coroutine concurrently in the background, don’t block the current loop
+            # in the background of the event loop, we want to handle tool calling so that we can continue to hear for other audio, other wise the event loop gets paused
+            current_task = asyncio.create_task(
+                handle_tool_call(transcript_text, websocket, state)
+            )  # we made this create_task because handle_tool_call is async + Run this coroutine concurrently in the background, don’t block the current loop
     except WebSocketDisconnect:
         print("disconnected.")
     except Exception as e:
         print(f"Error: {e}")
-    
-            
-        
-        
 
 
-
-
-
-# audio_file -> string 
-# converts the speech into the text via the stt llm, returns transcript 
+# audio_file -> string
+# converts the speech into the text via the stt llm, returns transcript
 def transcribe_audio(audio_file):
     transcript = client_stt.audio.transcriptions.create(
         file=audio_file,
@@ -605,69 +605,85 @@ def transcribe_audio(audio_file):
     )
     return transcript.text
 
-#we made this async since the LLM call has an await 
+
+# we made this async since the LLM call has an await
 async def handle_tool_call(transcript_text, websocket: WebSocket, state):
     try:
-        memory_text = await asyncio.to_thread(retrieve_context,CONVERSATION_ID, transcript_text)
-        messages = [{"role": "system", "content": system_prompt.format(memory_text=memory_text)}, {"role": "user", "content": transcript_text}]
+        memory_text = await asyncio.to_thread( #made this await since we want to pause on this function's execution so that we dont stop the event loop 
+            retrieve_context, CONVERSATION_ID, transcript_text
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt.format(memory_text=memory_text),
+            },
+            {"role": "user", "content": transcript_text},
+        ]
         response = await agent_delegator.chat.completions.create(
-        model="nvidia/nemotron-3-nano-30b-a3b:free",
-        messages=messages,tools=tools,stream=False)
-        tool_called = None 
-        
+            model="nvidia/nemotron-3-nano-30b-a3b:free",
+            messages=messages,
+            tools=tools,
+            stream=False,
+        )
+        tool_called = None
+
         if response.choices[0].message.tool_calls:
             function_name = response.choices[0].message.tool_calls[0].function.name
-            function_args = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
+            function_args = json.loads(
+                response.choices[0].message.tool_calls[0].function.arguments
+            )
             tool_called = function_name
-            await stream_ack_text_and_audio(function_name, function_args, websocket, state)
-            tool_result = await asyncio.to_thread(execute_tool, function_name, function_args, state)
+            await stream_ack_text_and_audio(
+                function_name, function_args, websocket, state
+            )
+            tool_result = await asyncio.to_thread(
+                execute_tool, function_name, function_args, state
+            )
             if not state["is_responding"]:
                 print("interrupted, returning early")
-                return 
+                return
             messages.append(response.choices[0].message)
-            messages.append({"tool_call_id": response.choices[0].message.tool_calls[0].id,
-                         "role": "tool",
-                         "name": function_name,
-                         "content": str(tool_result)})
-            ai_response = await stream_response_text_and_audio(messages, websocket, state)
+            messages.append(
+                {
+                    "tool_call_id": response.choices[0].message.tool_calls[0].id,
+                    "role": "tool",
+                    "name": function_name,
+                    "content": str(tool_result),
+                }
+            )
+            ai_response = await stream_response_text_and_audio(
+                messages, websocket, state
+            )
         else:
-            ai_response = await stream_response_text_and_audio(messages, websocket, state)
+            ai_response = await stream_response_text_and_audio(
+                messages, websocket, state
+            )
         await websocket.send_text(json.dumps({"type": "done"}))
-        save_messages("user", transcript_text, ai_response, None, tool_called) 
+        save_messages("user", transcript_text, ai_response, None, tool_called)
     except Exception as e:
         print(f"something went wrong:{e}")
-    return 
+    return
 
-         
-        
-        
-        
-        
-        
-        
-        
-        
 
-        
-#LLm call has an await so this must be async
+# LLm call has an await so this must be async
 async def stream_ack_text_and_audio(function_name, function_args, websocket, state):
-    ack_prompt = '''You are a brief voice assistant. Generate ONE short sentence acknowledging you are about to perform the requested action. 
-        Be warm and natural. Nothing more than one sentence.'''
+    ack_prompt = """You are a brief voice assistant. Generate ONE short sentence acknowledging you are about to perform the requested action. 
+        Be warm and natural. Nothing more than one sentence."""
     ack_messages = [
-    {"role": "system", "content": ack_prompt},
-    {"role": "user", "content": f"Tool being called: {function_name}, Args: {function_args}"}]
+        {"role": "system", "content": ack_prompt},
+        {
+            "role": "user",
+            "content": f"Tool being called: {function_name}, Args: {function_args}",
+        },
+    ]
     ack_response = await agent_delegator.chat.completions.create(
-        model="nvidia/nemotron-3-nano-30b-a3b:free",
-        messages=ack_messages,
-        stream=True)
-    
+        model="nvidia/nemotron-3-nano-30b-a3b:free", messages=ack_messages, stream=True
+    )
+
     await stream_text_and_audio(ack_response, websocket, state)
-    
-    
-    
-           
-       
-def execute_tool(function_name, function_args,state):
+
+
+def execute_tool(function_name, function_args, state):
     if not state["is_responding"]:
         print("interrupted, returning early")
         return ""
@@ -685,82 +701,90 @@ def execute_tool(function_name, function_args,state):
         result = get_last_user_message()
     else:
         result = "Tool not found"
-    return result 
-        
-#has await (for eaach chunk) so need async     
-async def stream_response_text_and_audio(messages, websocket,state):
+    return result
+
+
+# has await (for eaach chunk) so need async
+async def stream_response_text_and_audio(messages, websocket, state):
     final_response = await agent_delegator.chat.completions.create(
-        model="nvidia/nemotron-3-nano-30b-a3b:free",
-        messages=messages,
-        stream=True
+        model="nvidia/nemotron-3-nano-30b-a3b:free", messages=messages, stream=True
     )
     return await stream_text_and_audio(final_response, websocket, state)
-
-
-
 
 
 async def stream_text_and_audio(llm_response, websocket, state):
     try:
         build_response = ""
-        buffer = "" 
+        buffer = ""
         async for chunk in llm_response:
             if not state["is_responding"]:
                 break
-            if not chunk.choices:  
+            if not chunk.choices:
                 continue
             token = chunk.choices[0].delta.content
             if token:
                 build_response += token
-                buffer += token 
-                await websocket.send_text(json.dumps({"type": "token", "text": token})) #building up the text token by token 
-                '''bottom part down here is for the voice '''
+                buffer += token
+                await websocket.send_text(
+                    json.dumps({"type": "token", "text": token})
+                )  # building up the text token by token
+                """bottom part down here is for the voice """
                 sentence, after = extract_sentence(buffer)
-                if sentence: #if we see that we have a full sentence
-                    ai_response_audio = await asyncio.to_thread(generate_audio_bytes, sentence) #generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
+                if sentence:  # if we see that we have a full sentence
+                    ai_response_audio = await asyncio.to_thread(
+                        generate_audio_bytes, sentence
+                    )  # generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
                     await websocket.send_bytes(ai_response_audio)
-                    buffer = after #now make the next sentence the next buffer 
-        if buffer.strip(): #if we have any remaining audio that needs to be flushed after the loop, flush it out 
-            ai_response_audio = await asyncio.to_thread(generate_audio_bytes, buffer) #generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
+                    buffer = after  # now make the next sentence the next buffer
+        if (
+            buffer.strip()
+        ):  # if we have any remaining audio that needs to be flushed after the loop, flush it out
+            ai_response_audio = await asyncio.to_thread(
+                generate_audio_bytes, buffer
+            )  # generate audio for it, we have to_thread because generate_audio_bytes is synchronous, but we dont want it stop exeuction
             await websocket.send_bytes(ai_response_audio)
     except Exception as e:
-         print(f"stream_text_and_audio error: {e}")
+        print(f"stream_text_and_audio error: {e}")
     return build_response
-    
-    
-      
+
+
 def extract_sentence(buffer):
     """
     The purpose of this function is to extract the sentence and return the full sentence and what is coming after the sentence.
     """
     sentence_stoppers = ["! ", ". ", "? "]
-    found_element = next((stopper for stopper in sentence_stoppers if stopper in buffer), None)
+    found_element = next(
+        (stopper for stopper in sentence_stoppers if stopper in buffer), None
+    )
     if found_element:
-        position_of_buffer = buffer.index(found_element) 
-        prior_to_buffer = buffer[:position_of_buffer +1]
-        after_buffer = buffer[position_of_buffer+1:]
+        position_of_buffer = buffer.index(found_element)
+        prior_to_buffer = buffer[: position_of_buffer + 1]
+        after_buffer = buffer[position_of_buffer + 1 :]
         return prior_to_buffer, after_buffer
     else:
-        return None, buffer #we have no full sentence since there is no buffer 
-    
-    
+        return None, buffer  # we have no full sentence since there is no buffer
+
+
 # text -> audio bytes
 # given a full response, turns it into audio bytes
 def generate_audio_bytes(response):
     try:
         if not response or not response.strip():
             response = "I didn't catch that. Could you try again?"
-            
+
         chunks_of_audio = client_tts.tts.bytes(
             model_id="sonic-3-latest",
             transcript=str(response),
             voice={
-            "mode": "id",
-            "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",},
+                "mode": "id",
+                "id": "f786b574-daa5-4673-aa0c-cbe3e8534c02",
+            },
             output_format={
-            "container": "wav",
-            "sample_rate": 44100,
-            "encoding": "pcm_s16le",},)
+                "container": "wav",
+                "sample_rate": 44100,
+                "encoding": "pcm_s16le",
+            },
+        )
 
         sentence_audio = b""
         for chunk in chunks_of_audio:
@@ -771,58 +795,52 @@ def generate_audio_bytes(response):
         return b""
 
 
-
-
-
-#saves the username, user message, ai message, and audio file name to the data base
+# saves the username, user message, ai message, and audio file name to the data base
 def save_messages(username, user_message, ai_message, audio_file, tool_called=None):
-    user_data_to_insert = {"username": username,"message" :user_message}
-    ai_data_to_insert = {"username": "AI", "message": ai_message, "audio_file": audio_file, "tool_called": tool_called}      
+    user_data_to_insert = {"username": username, "message": user_message}
+    ai_data_to_insert = {
+        "username": "AI",
+        "message": ai_message,
+        "audio_file": audio_file,
+        "tool_called": tool_called,
+    }
     data_to_insert = []
     data_to_insert.append(user_data_to_insert)
     data_to_insert.append(ai_data_to_insert)
     try:
-        #insert  message to database 
+        # insert  message to database
         message_response = (
-            supabase_client.table("notes")
-            .insert(data_to_insert)
-            .execute()
+            supabase_client.table("notes").insert(data_to_insert).execute()
         )
         get_conversation_collection(CONVERSATION_ID).add_texts(
-        texts=[user_data_to_insert["message"]],
-        ids=[f"{CONVERSATION_ID}_user_{datetime.now().timestamp()}"],
-        metadatas=[
-            {"type": "message", "role": "user", "conversation_id": CONVERSATION_ID}
-        ],
-    )
+            texts=[user_data_to_insert["message"]],
+            ids=[f"{CONVERSATION_ID}_user_{datetime.now().timestamp()}"],
+            metadatas=[
+                {"type": "message", "role": "user", "conversation_id": CONVERSATION_ID}
+            ],
+        )
         get_conversation_collection(CONVERSATION_ID).add_texts(
-        texts=[ai_data_to_insert["message"]],
-        ids=[f"{CONVERSATION_ID}_assistant_{datetime.now().timestamp()}"],
-        metadatas=[
-            {"type": "message", "role": "assistant", "conversation_id": CONVERSATION_ID}
-        ],
-    )
+            texts=[ai_data_to_insert["message"]],
+            ids=[f"{CONVERSATION_ID}_assistant_{datetime.now().timestamp()}"],
+            metadatas=[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "conversation_id": CONVERSATION_ID,
+                }
+            ],
+        )
         print("message inserted successfully:", message_response.data)
     except Exception as e:
         print("An error occurred:", e)
 
 
-
-
-
-
-#get the full message log 
+# get the full message log
 @app.get("/getmessagelog/")
 def get_messages():
     response = supabase_client.table("notes").select("*").execute()
     all_data = response.data
     return all_data
-
-
-
-
-
-
 
 
 def retrieve_context(conversation_id, query):
@@ -834,9 +852,8 @@ def retrieve_context(conversation_id, query):
     for res in safe_search(conv, query, k=5, filter={"type": "message"}):
         same_conversation_msgs += res.page_content + "\n"
     print(f"[1] same_conversation_msgs:\n{same_conversation_msgs}")
-    
-    return same_conversation_msgs
 
+    return same_conversation_msgs
 
 
 def safe_search(collection, query, k, filter=None):
@@ -855,7 +872,6 @@ def safe_search(collection, query, k, filter=None):
     return results
 
 
-
 def get_conversation_collection(conversation_id):
     return Chroma(
         persist_directory="./chroma_db",
@@ -864,8 +880,7 @@ def get_conversation_collection(conversation_id):
     )
 
 
-
-'''
+"""
 
 def chunk_conversation(chunk_size):
     accumulated_string = ""
@@ -900,6 +915,4 @@ chunks = chunk_conversation(5)
 process_chunks(chunks)
 print(f"Loaded {len(chunks)} memory chunks into database!")
 
-'''
-
-
+"""

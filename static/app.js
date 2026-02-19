@@ -22,11 +22,12 @@ const sessionIdDisplay = document.getElementById('sessionIdDisplay');
 const userTranscription = document.getElementById('transcriptionText');
 const aiResponse = document.getElementById('aiResponseText');
 
+let isInterrupted = false; 
 
 let isFirstAIToken = true;  
 // VAD status element (we'll add this to the status area)
 let vadStatusElement = null;
-
+let currentAudio = null;
 function showError(message) {
     if (errorMessage) {
         errorMessage.textContent = message;
@@ -81,6 +82,9 @@ async function connect() {
 
         ws.onmessage = async (event) => {
             if (event.data instanceof Blob) {
+                   if (isInterrupted) {
+                        return;
+                    }
                  audioQueue.push(event.data);
                  playNextAudio()
                  return ;
@@ -88,6 +92,7 @@ async function connect() {
             try {
                  const data = JSON.parse(event.data);
                  if (data.type === 'transcription') {
+                     isInterrupted = false; 
                     userTranscription.textContent = data.text;
                  }
                  else if (data.type === 'token') {
@@ -116,16 +121,17 @@ function playNextAudio() {
     if (isPlayingAudio || audioQueue.length === 0) {
         return;
     }
+
     isPlayingAudio = true;
     isAISpeaking = true;
     muteMicrophone();
     
     const firstBlob = audioQueue.shift();
     const audioUrl = URL.createObjectURL(firstBlob);
-    const audio = new Audio(audioUrl);
-    audio.play();
+    currentAudio = new Audio(audioUrl);
+    currentAudio.play();
     
-    audio.onended = () => {
+    currentAudio.onended = () => {
         URL.revokeObjectURL(audioUrl);
         isPlayingAudio = false;
         if (audioQueue.length === 0) {
@@ -357,6 +363,12 @@ function clearClaudeResponse() {
 }
 
 async function startRecording() {
+    isInterrupted = true; 
+    if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+}
+
     audioQueue = [];
     isPlayingAudio = false;
     isAISpeaking = false;
